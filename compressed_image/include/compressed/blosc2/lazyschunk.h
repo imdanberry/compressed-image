@@ -134,9 +134,11 @@ namespace NAMESPACE_COMPRESSED_IMAGE
 					auto lazy_buff = std::vector<T>(this->chunk_elements(), this->lazy_chunk_value());
 					lazy_compressed_data.resize(blosc2::min_compressed_size(this->m_ChunkSize));
 
+					// Single-threaded, as in compressed::channel: a context with more than one thread starts its own
+					// blosc2 thread pool, and this one is reachable from channel's own constructors.
 					auto context = blosc2::create_compression_context<T>(
 						schunk, 
-						std::thread::hardware_concurrency(), 
+						1, 
 						enums::codec::lz4, 
 						9, 
 						this->m_BlockSize

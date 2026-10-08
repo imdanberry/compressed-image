@@ -71,13 +71,14 @@ namespace NAMESPACE_COMPRESSED_IMAGE
 		channel()
 		{
 			m_Schunk = std::make_shared<blosc2::schunk_var<T>>(blosc2::lazy_schunk<T>(0, 1, s_default_blocksize, s_default_chunksize));
+			// Single-threaded, as in the data constructor.
 			m_CompressionContext = blosc2::create_compression_context<T>(
-				std::thread::hardware_concurrency() / 2,
+				1,
 				enums::codec::lz4,
 				9,
 				s_default_blocksize
 			);
-			m_DecompressionContext = blosc2::create_decompression_context(std::thread::hardware_concurrency() / 2);
+			m_DecompressionContext = blosc2::create_decompression_context(1);
 		};
 
 		/// Initialize the channel with the given data.
@@ -124,8 +125,12 @@ namespace NAMESPACE_COMPRESSED_IMAGE
 			assert(chunk_size < std::numeric_limits<int32_t>::max());
 			assert(block_size < chunk_size);
 
-			m_CompressionContext = blosc2::create_compression_context<T>(std::thread::hardware_concurrency() / 2, m_Codec, m_CompressionLevel, block_size);
-			m_DecompressionContext = blosc2::create_decompression_context(std::thread::hardware_concurrency() / 2);
+			// Single-threaded contexts. Each context owns its own blosc2 thread pool for the channel's lifetime, so
+			// hardware_concurrency() / 2 per channel scales the process's thread count with the number of live channels
+			// and exhausts the iOS per-process thread limit on large documents. At nthreads == 1 blosc2 never starts a
+			// pool and takes its serial path.
+			m_CompressionContext = blosc2::create_compression_context<T>(1, m_Codec, m_CompressionLevel, block_size);
+			m_DecompressionContext = blosc2::create_decompression_context(1);
 
 			// Align the chunks to the scanlines, makes our lifes a lot easier on read/write.
 			auto chunk_size_aligned = util::align_chunk_to_scanlines_bytes<T>(m_Width, chunk_size);
@@ -191,11 +196,11 @@ namespace NAMESPACE_COMPRESSED_IMAGE
 			m_Height = height;
 
 			// Store the compression and decompression contexts, retrieving the block size from the underlying schunk
-			// wrapper
+			// wrapper. Single-threaded, as in the data constructor.
 			std::visit([&](auto& schunk)
 				{
-					m_CompressionContext = blosc2::create_compression_context<T>(std::thread::hardware_concurrency() / 2, m_Codec, m_CompressionLevel, schunk.max_block_size());
-					m_DecompressionContext = blosc2::create_decompression_context(std::thread::hardware_concurrency() / 2);
+					m_CompressionContext = blosc2::create_compression_context<T>(1, m_Codec, m_CompressionLevel, schunk.max_block_size());
+					m_DecompressionContext = blosc2::create_decompression_context(1);
 				}, *m_Schunk);
 			
 		}
@@ -568,7 +573,9 @@ namespace NAMESPACE_COMPRESSED_IMAGE
 		blosc2::schunk_var_ptr<T> m_Schunk = nullptr;
 		enums::codec m_Codec = enums::codec::lz4;
 
-		size_t m_Nthreads = std::thread::hardware_concurrency() / 2;
+		/// Threads for the transient decompression contexts. Single-threaded, as in the data constructor; only
+		/// `update_nthreads` raises it.
+		size_t m_Nthreads = 1;
 
 		/// We store a compression and decompression context here to allow us to reuse them rather than having
 		/// to reinitialize them on launch. May be nullptr;
